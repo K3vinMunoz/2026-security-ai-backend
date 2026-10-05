@@ -44,8 +44,14 @@ reproducible installs.
 
 ## Requirements
 
+### Local development
+
 - **Python 3.14** (`>=3.14,<3.15`)
 - **uv** — <https://docs.astral.sh/uv/>
+
+### Containers
+
+- **Docker** with the **Compose** plugin (`docker compose`)
 
 ---
 
@@ -61,12 +67,52 @@ This creates the virtual environment and installs runtime plus development depen
 
 ## Running the server
 
+### Locally
+
 ```bash
 uv run uvicorn app.main:app --reload
 ```
 
 The API is then available at <http://127.0.0.1:8000>, with interactive docs at
 <http://127.0.0.1:8000/docs>.
+
+### With Docker
+
+```bash
+docker compose up --build
+```
+
+Then verify the service:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/health
+```
+
+```json
+{
+  "status": "ok",
+  "service": "security-ai-backend",
+  "version": "0.1.0"
+}
+```
+
+To run it in the background, add `-d`. To stop and remove the stack:
+
+```bash
+docker compose down
+```
+
+Notes:
+
+- The image is built from `Dockerfile` on `python:3.14-slim-bookworm` and installs only
+  runtime dependencies with `uv sync --locked --no-dev`, so `uv.lock` is never modified
+  during the build and `pytest` / `ruff` are not present in the image.
+- The container listens on `0.0.0.0:8000` and is published on `127.0.0.1:8000` only.
+- It runs as the unprivileged user `app` (UID 10001), never as `root`.
+- `HEALTHCHECK` reuses the existing `/api/v1/health` endpoint via the Python standard
+  library; no extra endpoint or tool (`curl`, `wget`) is added to the image.
+- `.env` is **not** copied into the image. If a `.env` file exists locally it is loaded at
+  runtime by Compose; otherwise the defaults in `app/core/config.py` apply.
 
 ---
 

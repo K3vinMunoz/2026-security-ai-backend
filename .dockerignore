@@ -1,0 +1,40 @@
+# Versionado e historial
+.git
+.gitignore
+.gitattributes
+
+# Secretos y variables de entorno
+.env
+.env.*
+!.env.example
+
+# Entorno virtual del host: nunca debe entrar al build
+.venv
+venv
+
+# Caches de herramientas
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Cobertura
+.coverage
+.coverage.*
+htmlcov
+
+# Artefactos de build
+dist
+build
+*.egg-info
+
+# Editores
+.idea
+.vscode
+
+# Tests: la imagen de runtime no los necesita
+tests
+
+Dockerfile
+compose.yaml
