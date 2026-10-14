@@ -36,6 +36,9 @@ actually requires them, to avoid speculative architecture.
 | SQLAlchemy 2      | `2.1.4` (async)            |
 | psycopg 3         | `3.3.6` (async driver)     |
 | Alembic           | `1.20.0`                   |
+| Celery            | `5.6.3`                    |
+| Redis (server)    | `8.8.3` (broker)           |
+| redis-py (client) | `6.4.0`                    |
 | pytest            | `9.1.1` (dev)              |
 | httpx             | `0.28.1` (dev)             |
 | Ruff              | `0.16.9` (dev)             |
@@ -49,6 +52,29 @@ PostgreSQL with the **pgvector** extension, reached through **SQLAlchemy 2 async
 (`create_async_engine` + `async_sessionmaker`) over **psycopg 3** in native async mode
 (`postgresql+psycopg://`). The schema is versioned exclusively by **Alembic**; no
 `create_all` anywhere.
+
+### Asynchronous processing
+
+Background work is handled by **Celery**, using **Redis** as the message broker. There is a
+single, centralized Celery instance (`app/core/celery_app.py`) shared by the FastAPI
+producer and the standalone `worker` service, so configuration and task names cannot drift.
+
+- FastAPI **publishes** tasks; Redis **transports** them; the Celery worker **executes** them.
+- Redis is used only as a **broker** in this stage: no result backend and
+  `task_ignore_result=True`, so task return values are discarded.
+- Serialization is **JSON** only (`pickle` is never used).
+- Redis is an **internal** Compose service (`redis:6379`). It is **not** published on the
+  host. The worker does not publish ports either.
+- Redis has **no persistence configured** (no AOF/RDB volume): a broker restart can drop
+  in-flight messages. Celery does **not** guarantee exactly-once delivery; real semantics
+  depend on acknowledgements, retries, broker persistence and task idempotency.
+
+```text
+CLIENTE HTTP
+     │
+     ▼
+   FastAPI ──publishes──► Redis ──transports──► Celery Worker ──► result (log)
+```
 
 ---
 
@@ -92,9 +118,19 @@ The API is then available at <http://127.0.0.1:8000>, with interactive docs at
 docker compose up --build
 ```
 
-This starts two services: `backend` (FastAPI) and `postgres` (PostgreSQL with pgvector).
-The backend waits until PostgreSQL is healthy before starting, thanks to a Compose
-healthcheck condition.
+This starts four services:
+
+| Service    | Role                                                        | Host port            |
+| ---------- | ----------------------------------------------------------- | -------------------- |
+| `backend`  | FastAPI (HTTP API + Celery task producer)                   | `127.0.0.1:8000`     |
+| `worker`   | Celery worker (background task execution)                   | none                 |
+| `redis`    | Redis broker (internal only)                                | none                 |
+| `postgres` | PostgreSQL + pgvector (persistent)                          | `127.0.0.1:15432`    |
+
+The backend waits until PostgreSQL is healthy before starting. The worker waits until Redis
+is healthy before starting. The backend deliberately does **not** depend on Redis at
+startup (it only publishes tasks), so a transient broker outage never prevents FastAPI from
+booting.
 
 Then verify the service:
 
@@ -158,6 +194,60 @@ Notes:
 - PostgreSQL is published only on the host loopback as `127.0.0.1:15432:5432`
   (alternative loopback port: a system PostgreSQL may already occupy `5432` on the host).
   From inside Docker, the backend connects using the Compose DNS name `postgres`.
+
+### Redis and Celery
+
+The `worker` service reuses the **same image** as `backend` (no second Dockerfile); only the
+command differs. It runs as the unprivileged `app` user and publishes **no** ports.
+
+Check that Redis is alive:
+
+```bash
+docker compose exec redis redis-cli ping
+# PONG
+```
+
+Check that the worker is up and responding (Celery control channel):
+
+```bash
+docker compose exec worker celery -A app.core.celery_app:celery_app inspect ping
+```
+
+Publish the smoke task from a Python process inside the backend container (no HTTP endpoint
+is created just to test the infrastructure):
+
+```bash
+docker compose exec backend python -c \
+  "from app.tasks.smoke import ping; ping.delay()"
+```
+
+Then confirm the worker actually **executed** it:
+
+```bash
+docker compose logs worker
+```
+
+Look for the line:
+
+```text
+smoke task executed: app.tasks.smoke.ping
+```
+
+The smoke task only logs a message: it touches no database, performs no OCR, reads no
+files and makes no outbound network calls, so it is safe to run repeatedly.
+
+Restart behaviour:
+
+- `docker compose restart redis` — Redis comes back and the worker reconnects automatically;
+  if the worker was mid-flight it may log a connection error until the broker returns, but it
+  recovers on its own (no manual restart required).
+- `docker compose restart worker` — the worker restarts and keeps consuming new tasks.
+- Neither restart touches PostgreSQL or its volume.
+
+> **Redis license notice.** The pinned image `redis:8.8.3-alpine` is distributed under the
+> Redis tri-license (AGPLv3 / RSALv2 / SSPLv1). It is used here exclusively as an internal
+> Celery broker, unmodified and not offered as a standalone service. This must be reviewed
+> before distributing the product to a customer.
 
 ---
 
@@ -231,9 +321,16 @@ through the single `settings` object. No scattered `os.getenv(...)` calls.
 | `POSTGRES_DB`     | `security_ai`               | Database name                         |
 | `POSTGRES_USER`   | `security_ai`               | Database user                         |
 | `POSTGRES_PASSWORD`| `security_ai_dev_password` | Database password (fictional, dev)    |
+| `REDIS_HOST`      | `localhost`                 | Redis host (`redis` inside Docker)    |
+| `REDIS_PORT`      | `6379`                      | Redis port                            |
+| `REDIS_DB`        | `0`                         | Redis database index                  |
 
 The SQLAlchemy DSN is derived internally from the `POSTGRES_*` variables as
 `postgresql+psycopg://<user>:<password>@<host>:<port>/<db>`.
+
+The Celery broker URL is derived internally from the `REDIS_*` variables as
+`redis://<host>:<port>/<db>`. There is intentionally **no** `CELERY_BROKER_URL` setting:
+a single source of truth avoids two configurations that could contradict each other.
 
 Copy `.env.example` to `.env` for local overrides. `.env` is git-ignored and must never be
 committed. The values shown are fictitious development defaults.
@@ -265,4 +362,5 @@ Not implemented yet. Listed only to show intended direction:
 - RAG querying
 - Controlled structured SQL querying
 - Local LLM execution (e.g. Ollama, vLLM)
-- Asynchronous processing with Celery and Redis
+- Persistent job tracking (currently only an example smoke task exists; advanced retry
+  policies, task routing and multiple queues are not implemented)

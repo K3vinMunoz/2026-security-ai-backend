@@ -14,12 +14,70 @@ services:
       POSTGRES_DB: security_ai
       POSTGRES_USER: security_ai
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-security_ai_dev_password}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+    env_file:
+      - path: .env
+        required: false
+    # The backend only *publishes* tasks; it does not need Redis to start.
+    # Deliberately no dependency on Redis here, so a transient broker outage
+    # never prevents FastAPI from booting or forces it to restart.
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: security-ai-backend:latest
+    restart: unless-stopped
+    command:
+      - celery
+      - -A
+      - app.core.celery_app:celery_app
+      - worker
+      - --loglevel=INFO
+      - --concurrency=2
+    environment:
+      DEBUG: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
     env_file:
       - path: .env
         required: false
     depends_on:
-      postgres:
+      redis:
         condition: service_healthy
+    # Lightweight liveness check using Celery's own control channel. Kept at a
+    # low frequency to avoid unnecessary load on Redis. A missed ping (e.g.
+    # during a Redis restart) simply marks the worker unhealthy until the next
+    # successful check; Docker does not restart containers on unhealthy by
+    # default, so there is no restart storm.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery -A app.core.celery_app:celery_app inspect ping --timeout 5 | grep -q pong
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+  redis:
+    image: redis:8.8.3-alpine
+    restart: unless-stopped
+    # No `ports:` on purpose: Redis is an internal broker only, reachable from
+    # other services via the Compose DNS name `redis:6379`. It must not be
+    # exposed on the host. For diagnostics use:
+    #   docker compose exec redis redis-cli ping
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
   postgres:
     image: pgvector/pgvector:0.8.7-pg17-bookworm

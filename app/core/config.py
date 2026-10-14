@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     postgres_user: str = "security_ai"
     postgres_password: str = "security_ai_dev_password"
 
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+
     @property
     def sqlalchemy_database_url(self) -> URL:
         """Async-capable DSN for SQLAlchemy 2 + psycopg 3.
@@ -46,6 +50,18 @@ class Settings(BaseSettings):
             port=self.postgres_port,
             database=self.postgres_db,
         )
+
+    @property
+    def celery_broker_url(self) -> str:
+        """Celery broker URL derived from the individual ``REDIS_*`` variables.
+
+        Kept as a single source of truth: there is no separate
+        ``CELERY_BROKER_URL`` setting that could drift from the Redis
+        components. Redis runs as an internal Docker Compose service reached at
+        ``redis:6379``; it is never published on the host. In this stage Redis
+        is used only as a message broker (no auth, no result backend).
+        """
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
 
 settings = Settings()
