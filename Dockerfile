@@ -46,6 +46,11 @@ RUN groupadd --system --gid 10001 app \
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --chown=app:app app ./app
 
+# Alembic (migraciones) se ejecuta dentro del contenedor runtime, p.ej.
+# `docker compose run --rm backend alembic upgrade head`.
+COPY --chown=app:app alembic.ini ./
+COPY --chown=app:app alembic ./alembic
+
 USER app
 
 EXPOSE 8000
