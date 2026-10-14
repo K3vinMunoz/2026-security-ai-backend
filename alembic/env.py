@@ -3,7 +3,7 @@ from logging.config import fileConfig
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
 from app.core.config import settings
@@ -12,12 +12,13 @@ from app.db.base import Base
 # alembic.ini (this file) is the Alembic config object.
 config = context.config
 
-# The connection string comes from the application settings, never from
-# alembic.ini, so credentials are not stored in the repository.
-config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_url)
-
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+# The connection URL is built by the application settings as a
+# ``sqlalchemy.engine.URL`` and consumed directly, so credentials never pass
+# through ConfigParser (which would mangle passwords containing ``%``).
+database_url = settings.sqlalchemy_database_url
 
 # Single declarative base: future domain models register here automatically.
 target_metadata = Base.metadata
@@ -25,9 +26,8 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode (emit SQL without a DB connection)."""
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -46,11 +46,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     """Run migrations in 'online' mode over an async engine (psycopg 3)."""
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = create_async_engine(database_url, poolclass=pool.NullPool)
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

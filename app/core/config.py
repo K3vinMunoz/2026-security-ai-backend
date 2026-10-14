@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 
 class Settings(BaseSettings):
@@ -27,16 +28,23 @@ class Settings(BaseSettings):
     postgres_password: str = "security_ai_dev_password"
 
     @property
-    def sqlalchemy_database_url(self) -> str:
+    def sqlalchemy_database_url(self) -> URL:
         """Async-capable DSN for SQLAlchemy 2 + psycopg 3.
 
-        Derived from the individual POSTGRES_* variables so credentials stay in
-        the environment instead of a single hardcoded connection string.
+        Built with ``URL.create`` so reserved characters in the user/password
+        (``@``, ``:``, ``/``, ``%``, ...) are escaped correctly instead of
+        corrupting the connection string. The URL object also masks the
+        password in logs. Derived from the individual POSTGRES_* variables so
+        credentials stay in the environment instead of a hardcoded string.
         ``postgresql+psycopg`` is the async driver pair for psycopg 3.
         """
-        return (
-            f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        return URL.create(
+            drivername="postgresql+psycopg",
+            username=self.postgres_user,
+            password=self.postgres_password,
+            host=self.postgres_host,
+            port=self.postgres_port,
+            database=self.postgres_db,
         )
 
 
