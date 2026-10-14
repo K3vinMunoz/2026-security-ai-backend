@@ -22,6 +22,10 @@ needs business logic and persistence, and **Ports/Adapters** for external integr
 No microservices. Ports, adapters and abstractions are introduced **only** when a feature
 actually requires them, to avoid speculative architecture.
 
+See [Architecture](docs/architecture.md) for the project structure, directory
+responsibilities, module and Service/Repository/Ports conventions, HTTP and asynchronous
+flows, and architectural decisions.
+
 ---
 
 ## Current Stack
